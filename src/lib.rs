@@ -25,6 +25,23 @@ pub struct Output {
 #[derive(Default, Debug, PartialEq)]
 pub struct Options {
     pub precision: String,
+    /// D3D12 and Metal
+    /// NDC: +Y is up. Point(-1, -1) is at the bottom left corner.
+    /// Framebuffer coordinate: +Y is down. Origin(0, 0) is at the top left corner.
+    /// Texture coordinate: +Y is down. Origin(0, 0) is at the top left corner.
+    /// OpenGL, OpenGL ES and WebGL
+
+    /// NDC: +Y is up. Point(-1, -1) is at the bottom left corner.
+    /// Framebuffer coordinate: +Y is up. Origin(0, 0) is at the bottom left corner.
+    /// Texture coordinate: +Y is up. Origin(0, 0) is at the bottom left corner.
+    ///
+    /// Neither shadermagic nor miniquad got a proper solution for a different Y axis for
+    /// framebuffer.s
+    /// metal_flip_y makes metal vertex shader to automatically flip do something like
+    /// `gl_Position.y = -gl_Position.y`, which helps to avoid certain `#ifdef __METAL`
+    /// for shaders rendering to framebuffers
+    pub metal_flip_y: bool,
+
     pub defines: Vec<String>,
 }
 
@@ -61,6 +78,7 @@ fn glsl_v100(input: &str, _kind: ShaderKind, defines: &[String]) -> String {
     for define in defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
+    processed.push_str("#define __GL 1\n");
 
     for line in input.lines() {
         processed.push_str(&line);
@@ -82,6 +100,7 @@ fn glsl_v100_webgl(input: &str, _kind: ShaderKind, defines: &[String]) -> String
     for define in defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
+    processed.push_str("#define __GL 1\n");
     processed.push_str("#define sm_level(x) x\n");
 
     for line in input.lines() {
@@ -103,6 +122,7 @@ fn glsl_v130(input: &str, _kind: ShaderKind, defines: &[String]) -> String {
     for define in defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
+    processed.push_str("#define __GL 1\n");
 
     for line in input.lines() {
         processed.push_str(&line);
@@ -119,6 +139,7 @@ fn glsl_v330(input: &str, kind: ShaderKind, defines: &[String]) -> String {
     for define in defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
+    processed.push_str("#define __GL 1\n");
     if let ShaderKind::Fragment = kind {
         processed.push_str("out vec4 output_FragColor;\n");
     }
@@ -155,6 +176,7 @@ fn glsl_v300es(input: &str, kind: ShaderKind, defines: &[String]) -> String {
     for define in defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
+    processed.push_str("#define __GL 1\n");
     if let ShaderKind::Fragment = kind {
         processed.push_str("out vec4 output_FragColor;\n");
     }
@@ -206,7 +228,7 @@ pub fn transform(
         fragment: glsl_v300es(fragment, ShaderKind::Fragment, &options.defines),
         vertex: glsl_v300es(vertex, ShaderKind::Vertex, &options.defines),
     };
-    output.metal = metal::metal(fragment, vertex, meta, &options.defines);
+    output.metal = metal::metal(fragment, vertex, meta, &options);
     Ok(output)
 }
 

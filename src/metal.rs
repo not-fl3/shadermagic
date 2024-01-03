@@ -11,6 +11,25 @@ fn replace_types(l: &str) -> String {
 fn replace_functions(l: &str) -> String {
     l.replace("dFdx", "dfdx").replace("dFdy", "dfdy")
 }
+fn eat_string(line: &mut String, l: &str) {
+    *line = line.trim().strip_prefix(l).unwrap().to_string()
+}
+fn get_i32(line: &mut String) -> i32 {
+    let mut l = line
+        .trim()
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')');
+    let res = l.next().unwrap().to_string();
+    *line = line.trim().strip_prefix(&res).unwrap().to_string();
+    res.parse::<i32>().unwrap()
+}
+fn get_string(line: &mut String) -> String {
+    let mut l = line
+        .trim()
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';');
+    let res = l.next().unwrap().to_string();
+    *line = line.trim().strip_prefix(&res).unwrap().to_string();
+    res
+}
 fn emit_uniforms_struct(processed: &mut String, meta: &miniquad::ShaderMeta) {
     processed.push_str("struct Uniforms {\n");
     for uniform in &meta.uniforms.uniforms {
@@ -32,7 +51,7 @@ fn emit_vertex_struct(processed: &mut String, vertex: &str) -> Vec<(String, Stri
     let mut attributes = vec![];
     processed.push_str("struct Vertex {\n");
     for attribute in vertex.lines().filter(|l| l.contains("attribute")) {
-        let attribute = replace_types(attribute).replace(";", "");
+        let attribute = replace_types(attribute).replace(";", "").trim().to_string();
         let mut attribute = attribute.split(' ');
         let type_ = attribute.nth(1).unwrap();
         let name = attribute.nth(0).unwrap();
@@ -50,7 +69,7 @@ fn emit_rasterizer_data_struct(processed: &mut String, vertex: &str) -> Vec<Stri
 
     let mut outs = vec![];
     for varying in vertex.lines().filter(|l| l.contains("varying")) {
-        let varying = replace_types(varying).replace(";", "");
+        let varying = replace_types(varying).replace(";", "").trim().to_string();
         let mut varying = varying.split(' ');
         let type_ = varying.nth(1).unwrap();
         let name = varying.nth(0).unwrap();
@@ -64,7 +83,7 @@ fn emit_rasterizer_data_struct(processed: &mut String, vertex: &str) -> Vec<Stri
 fn collect_texture_types(fragment: &str) -> HashMap<String, String> {
     let mut res = HashMap::new();
     for uniform in fragment.lines().filter(|l| l.contains("uniform sampler")) {
-        let mut uniform = uniform.split(" ");
+        let mut uniform = uniform.trim().split(" ");
         let type_ = uniform.nth(1).unwrap();
         let name = uniform.nth(0).unwrap().replace(";", "");
 
@@ -73,17 +92,21 @@ fn collect_texture_types(fragment: &str) -> HashMap<String, String> {
     res
 }
 
+fn count_braces(line: &str, brace: char) -> i32 {
+    line.chars().filter(|c| *c == brace).count() as i32
+}
 pub fn metal(
     fragment: &str,
     vertex: &str,
     meta: &miniquad::ShaderMeta,
-    defines: &[String],
+    options: &crate::Options,
 ) -> String {
     let mut processed = String::new();
 
     processed.push_str("#include <metal_stdlib>\n");
     processed.push_str("using namespace metal;\n");
-    for define in defines {
+    processed.push_str("#define __METAL 1\n");
+    for define in &options.defines {
         processed.push_str(&format!("#define {} 1\n", define));
     }
     processed.push_str(
@@ -99,12 +122,14 @@ pub fn metal(
     let outs = emit_rasterizer_data_struct(&mut processed, vertex);
 
     let mut in_main = false;
+    let mut main_curly_braces: i32 = 0;
     for line in vertex.lines() {
         if line.contains("uniform") || line.contains("attribute") || line.contains("varying") {
             continue;
         }
         if line.contains("void main()") {
             in_main = true;
+            main_curly_braces = count_braces(line, '{');
             processed.push_str("vertex RasterizerData vertexShader(\n");
             processed.push_str("    Vertex v [[stage_in]],\n");
             processed.push_str("    constant Uniforms& uniforms [[buffer(0)]]\n");
@@ -114,8 +139,10 @@ pub fn metal(
         }
 
         let mut line = line.replace("mat3(", "sm_to_m3(");
-        line = replace_types(&line);
+        line = replace_types(&line).trim().to_string();
         if in_main {
+            main_curly_braces += count_braces(&line, '{');
+            main_curly_braces -= count_braces(&line, '}');
             line = line.replace("gl_Position", "msl_vertex_out.position");
             for (attribute, _) in &attributes {
                 line = line.replace(&*attribute, &format!("v.{}", attribute));
@@ -129,8 +156,12 @@ pub fn metal(
                 line = line.replace(&*out, &format!("msl_vertex_out.{}", out));
                 line = line.replace("msl_vertex_out.msl_vertex_out.", "msl_vertex_out.");
             }
-            if line.starts_with("}") {
+            if main_curly_braces == 0 {
+                if options.metal_flip_y {
+                    processed.push_str("msl_vertex_out.position.y = -msl_vertex_out.position.y;\n");
+                }
                 processed.push_str("return msl_vertex_out;\n");
+                in_main = false;
             }
         }
 
@@ -139,15 +170,41 @@ pub fn metal(
     }
 
     let mut in_main = false;
-
+    let mut mrt = false;
+    let mut mrt_targets = vec![];
     let sampler_types = collect_texture_types(fragment);
+    processed.push_str("float2 textureSize(texture2d<float> t, int x) {return float2(t.get_width(), t.get_height());}\n");
     for line in fragment.lines() {
         if line.contains("uniform") || line.contains("attribute") || line.contains("varying") {
             continue;
         }
+        if line.contains("layout") && line.contains("location") && line.contains("out") {
+            let mut line = line.to_string();
+            eat_string(&mut line, "layout");
+            eat_string(&mut line, "(");
+            eat_string(&mut line, "location");
+            eat_string(&mut line, "=");
+            let location = get_i32(&mut line);
+            eat_string(&mut line, ")");
+            eat_string(&mut line, "out");
+            eat_string(&mut line, "vec4");
+            let name = get_string(&mut line);
+            mrt_targets.push((location, name));
+            mrt = true;
+            continue;
+        }
         if line.contains("void main()") {
             in_main = true;
-            processed.push_str("fragment float4 fragmentShader(\n");
+            if mrt {
+                processed.push_str("struct FragmentOutput {\n");
+                for (n, name) in &mrt_targets {
+                    processed.push_str(&format!("    float4 {name} [[color({n})]];\n"));
+                }
+                processed.push_str("};\n");
+            }
+            let return_type = if mrt { "FragmentOutput" } else { "float4" };
+            main_curly_braces = count_braces(line, '{');
+            processed.push_str(&format!("fragment {return_type} fragmentShader(\n"));
             processed.push_str("    RasterizerData in[[stage_in]],\n");
             processed.push_str("    constant Uniforms& uniforms [[buffer(0)]],\n");
             for (n, image) in meta.images.iter().enumerate() {
@@ -167,7 +224,7 @@ pub fn metal(
                 }
             }
             processed.push_str(") {\n");
-            processed.push_str("    float4 msl_out_color;\n");
+            processed.push_str(&format!("    {return_type} msl_out_color;\n"));
             continue;
         }
 
@@ -175,7 +232,12 @@ pub fn metal(
         line = replace_types(&line);
         line = replace_functions(&line);
         if in_main {
+            main_curly_braces += count_braces(&line, '{');
+            main_curly_braces -= count_braces(&line, '}');
             line = line.replace("gl_FragColor", "msl_out_color");
+            for (_, target) in &mrt_targets {
+                line = line.replace(target, &format!("msl_out_color.{target}"));
+            }
             for (attribute, _) in &attributes {
                 line = line.replace(&*attribute, &format!("v.{}", attribute));
                 line = line.replace("v.v.", "v.");
@@ -202,8 +264,9 @@ pub fn metal(
                     &format!("{}.sample({}Smplr", image, image),
                 );
             }
-            if line.starts_with("}") {
+            if main_curly_braces == 0 {
                 processed.push_str("return msl_out_color;\n");
+                in_main = false;
             }
         }
 
