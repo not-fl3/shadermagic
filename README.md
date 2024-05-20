@@ -6,6 +6,8 @@
 
 If you want something that actually works, check [naga](https://github.com/gfx-rs/naga), [spirvcross](https://github.com/KhronosGroup/SPIRV-Cross), [sokol-shdc](https://github.com/floooh/sokol-tools/blob/master/docs/sokol-shdc.md), [glslang](https://github.com/KhronosGroup/glslang), [glslcc](https://github.com/septag/glslcc), [hlsl parser](https://github.com/unknownworlds/hlslparser), [hlslparser fork](https://github.com/Thekla/hlslparser/blob/master/src/MSLGenerator.cpp) or even [nanoshredder](https://github.com/not-fl3/nanoshredder).
 
+Another relevant case study is [this emscripten hack](https://github.com/emscripten-core/emscripten/blob/1336355ab0bc040c9122ef8b93aae40366920fce/src/library_webgl.js#L3065). `shadermagic` is a slightly more advanced version of the same idea.
+
 `shadermagic` takes _some undocumented almost #version 130_ shader and apply a ton of String::replace to make `plain version 100`, `version 100 with webgl1 extensions`, `130`, `330`,  `300 es` and `metal's MSL`.
 
 Metal is a bit of a special case, with a bit of extra code on top of `String::replace`. But it is still very sipmple string manipulations. `shadermagic` knows nothing about AST and shaders semantics.
