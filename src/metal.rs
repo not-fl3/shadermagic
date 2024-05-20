@@ -40,8 +40,11 @@ fn emit_uniforms_struct(processed: &mut String, meta: &miniquad::ShaderMeta) {
             Float2 => "float2",
             Float3 => "float3",
             Float4 => "float4",
+            Int1 => "int",
+            Int2 => "int2",
+            Int3 => "int3",
+            Int4 => "int4",
             Mat4 => "float4x4",
-            _ => unimplemented!(),
         };
         processed.push_str(&format!("    {} {};\n", type_, uniform.name));
     }
